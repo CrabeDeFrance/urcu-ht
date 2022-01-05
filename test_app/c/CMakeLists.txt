@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+PROJECT(rcu-test-app)
+ADD_EXECUTABLE(rcu-test-app main.c)
+SET(CMAKE_C_FLAGS "-O3 -ggdb -Wall")
+TARGET_LINK_LIBRARIES(rcu-test-app urcu-memb urcu-cds pthread)
+set_property(TARGET rcu-test-app PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)

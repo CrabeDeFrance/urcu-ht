@@ -1,0 +1,13 @@
+[package]
+name = "urcu-ht"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libc = "0.2"
+urcu-sys = "0.0"
+memoffset = "0.6.5"
+clap = "3.0.0"
+wyhash = "0.5.0"
