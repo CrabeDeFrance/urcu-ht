@@ -25,7 +25,7 @@ impl ThreadData {
 static mut GLOBAL_THREAD_DATA: Vec<ThreadData> = Vec::new();
 
 fn read_rcu(ht: Arc<RcuHt<u32, u32>>, id: u32) {
-    let ht = ht.read();
+    let thread = ht.thread();
 
     let thread_data = unsafe {
         let v = &mut GLOBAL_THREAD_DATA;
@@ -33,7 +33,8 @@ fn read_rcu(ht: Arc<RcuHt<u32, u32>>, id: u32) {
     };
 
     loop {
-        let val = ht.get_clone(&GLOBAL_KEY_LOOKUP);
+        let rdlock = thread.rdlock();
+        let val = rdlock.get(&GLOBAL_KEY_LOOKUP);
         match val {
             Some(_) => thread_data.key_found += 1,
             None => thread_data.key_not_found += 1,
@@ -94,7 +95,8 @@ fn main() {
         }));
     }
 
-    let mut ht_write = ht.write().mutex().lock().unwrap();
+    let thread = ht.thread();
+    let mut ht_write = thread.wrlock().unwrap();
     let mut now = std::time::Instant::now();
 
     loop {

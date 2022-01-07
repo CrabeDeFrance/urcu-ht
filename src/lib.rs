@@ -30,7 +30,7 @@
 //!         std::thread::sleep(std::time::Duration::from_millis(100));
 //!         
 //!         let read = ht.rdlock();
-//!         let review = read.get_clone(&"Adventures of Huckleberry Finn".to_string());
+//!         let review = read.get("Adventures of Huckleberry Finn");
 //!         match review {
 //!             Some(review) => println!("{}: {}", "Adventures of Huckleberry Finn", review),
 //!             None => println!("{} is unreviewed.", "Adventures of Huckleberry Finn")
@@ -49,6 +49,7 @@
 //!
 //! child.join().expect("cannot join thread");
 //! ```
+use std::borrow::Borrow;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
@@ -97,7 +98,6 @@ unsafe impl<K, V> Sync for RcuHt<K, V> {}
 impl<K, V> RcuHt<K, V>
 where
     K: Hash + Eq,
-    V: Clone,
 {
     /// Allocate a new instance of urcu hashtable.
     ///
@@ -176,12 +176,36 @@ struct RcuLfhtNode<K, V> {
 /// Match function callback used when looking for objects.
 /// Returns 1 if current node key and lookup key are equals, 0 otherwise.
 /// Called by urcu_sys::cds_lfht_lookup
+/// Unsized callback version
+unsafe extern "C" fn urcu_match_ref_fn<Q, K, V>(
+    node: *mut urcu_sys::cds_lfht_node,
+    key: *const std::ffi::c_void,
+) -> i32
+where
+    K: Borrow<Q>,
+    Q: ?Sized + Eq,
+{
+    let key = *(key as *const &Q);
+    let node = urcu_cds_lfht_node_to_rust_type::<K, V>(node);
+    let node_key = (*node).key.borrow();
+
+    if key.eq(node_key) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Match function callback used when looking for objects.
+/// Returns 1 if current node key and lookup key are equals, 0 otherwise.
+/// Called by urcu_sys::cds_lfht_lookup
+/// Sized callback version
 unsafe extern "C" fn urcu_match_fn<K, V>(
     node: *mut urcu_sys::cds_lfht_node,
     key: *const std::ffi::c_void,
 ) -> i32
 where
-    K: Hash + Eq,
+    K: Eq,
 {
     let key = key as *const K;
     let node = urcu_cds_lfht_node_to_rust_type::<K, V>(node);
@@ -216,9 +240,13 @@ unsafe fn urcu_cds_lfht_head_to_rust_type<K, V>(
 /// Helper function used to perform lookup (used at multiple places).
 /// This function must be called with rcu_read_lock held.
 /// Threads calling this API need to be registered (urcu_sys::rcu_register_thread).
-unsafe fn urcu_get_node<K, V>(ht: *mut urcu_sys::cds_lfht, key: &K) -> *mut urcu_sys::cds_lfht_node
+unsafe fn urcu_get_node<Q, K, V>(
+    ht: *mut urcu_sys::cds_lfht,
+    key: &Q,
+) -> *mut urcu_sys::cds_lfht_node
 where
-    K: Hash + Eq,
+    K: Borrow<Q>,
+    Q: ?Sized + Hash + Eq,
 {
     let hash = urcu_key_hash(key);
 
@@ -234,8 +262,8 @@ where
     urcu_sys::cds_lfht_lookup(
         ht,
         hash,
-        Some(urcu_match_fn::<K, V>),
-        key as *const K as *const std::ffi::c_void,
+        Some(urcu_match_ref_fn::<Q, K, V>),
+        &key as *const &Q as *const std::ffi::c_void,
         &mut iter as *mut urcu_sys::cds_lfht_iter,
     );
 
@@ -245,7 +273,7 @@ where
 }
 
 /// helper function to compute a hash of a key.
-fn urcu_key_hash<K: Hash>(data: &K) -> u64 {
+fn urcu_key_hash<K: ?Sized + Hash>(data: &K) -> u64 {
     let mut hasher = wyhash::WyHash::with_seed(3);
     /*hasher.write(&[0, 1, 2]);*/
 
@@ -286,7 +314,6 @@ pub struct RcuHtThread<'ht, K, V> {
 impl<'ht, K, V> RcuHtThread<'ht, K, V>
 where
     K: Hash + Eq,
-    V: Clone,
 {
     /// Get a new "read" handle.
     /// A different handle is needed for each thread doing "read" operations.
@@ -355,10 +382,9 @@ pub struct RcuHtRead<'thread, 'ht, K, V> {
     _thread: &'thread RcuHtThread<'ht, K, V>,
 }
 
-impl<'thread, 'ht, K, V> RcuHtRead<'thread, 'ht, K, V>
+impl<'rdlock, 'thread, 'ht, K, V> RcuHtRead<'thread, 'ht, K, V>
 where
     K: Hash + Eq,
-    V: Clone,
 {
     /// Get a new "read" handle.
     /// A different handle is needed for each thread doing "read" operations.
@@ -377,15 +403,19 @@ where
         }
     }
 
-    pub fn get_clone(&self, key: &K) -> Option<V> {
-        let mut ret: Option<V> = None;
+    pub fn get<Q: ?Sized>(&'rdlock self, key: &Q) -> Option<&'rdlock V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
+        let mut ret: Option<&V> = None;
 
         unsafe {
-            let found_node = urcu_get_node::<K, V>(self.urcuht, key);
+            let found_node = urcu_get_node::<Q, K, V>(self.urcuht, key);
 
             if !found_node.is_null() {
                 let node = urcu_cds_lfht_node_to_rust_type::<K, V>(found_node);
-                ret = Some((*node).data.clone());
+                ret = Some(&(*node).data);
             }
         }
 
@@ -510,7 +540,11 @@ where
     /// Delete the value indexed by the `key` from the hashtable.
     ///
     /// This function may fail if node is not found.
-    pub fn remove(&mut self, key: &K) -> Result<(), RcuError> {
+    pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Result<(), RcuError>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq,
+    {
         let mut found = false;
         let mut err = 0;
 
@@ -518,7 +552,7 @@ where
             // RCU read-side lock must be held between lookup and removal.
             urcu_sys::rcu_read_lock();
 
-            let found_node = urcu_get_node::<K, V>(self.urcuht, key);
+            let found_node = urcu_get_node::<Q, K, V>(self.urcuht, key);
 
             if !found_node.is_null() {
                 found = true;
@@ -559,7 +593,7 @@ mod tests {
     fn it_works() {
         // Type inference lets us omit an explicit type signature (which
         // would be `HashMap<String, String>` in this example).
-        let ht = RcuHt::new(64, 64, 64, false)
+        let ht = RcuHt::<String, String>::new(64, 64, 64, false)
             .expect("Cannot create hashtable, probably due to invalid parameters");
         let ht = std::sync::Arc::new(ht);
         // Create a new thread to get book reviews.
@@ -574,9 +608,10 @@ mod tests {
 
                     let rdlock = ht.rdlock();
 
-                    let review = rdlock.get_clone(&"Adventures of Huckleberry Finn".to_string());
+                    let review = rdlock.get("Adventures of Huckleberry Finn");
                     assert_eq!(review.is_some(), true);
-                    assert_eq!(review.unwrap(), "My favorite book.".to_string());
+                    let review = review.unwrap();
+                    assert_eq!(review.eq("My favorite book."), true);
                 }
 
                 // uncomment this to check rdlock cannot live longer than ht thread
@@ -598,6 +633,20 @@ mod tests {
 
                     // get a rdlock and return it
                     ht.wrlock()
+                };
+                */
+
+                // uncomment this to check a ref to a value cannot live longer than rdlock
+                /*
+                // Get a read handle for this thread
+                let ht = ht.thread();
+
+                let _out_error = {
+                    // get a rdlock
+                    let rdlock = ht.rdlock();
+
+                    // get a reference to a value then try to return it will lock is released
+                    rdlock.get("Adventures of Huckleberry Finn")
                 };
                 */
             })
