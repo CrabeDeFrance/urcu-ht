@@ -376,8 +376,6 @@ impl<'ht, K, V> Drop for RcuHtThread<'ht, K, V> {
 }
 
 pub struct RcuHtRead<'thread, 'ht, K, V> {
-    phantom_key: PhantomData<K>,
-    phantom_val: PhantomData<V>,
     urcuht: *mut urcu_sys::cds_lfht,
     _thread: &'thread RcuHtThread<'ht, K, V>,
 }
@@ -396,8 +394,6 @@ where
         }
 
         RcuHtRead {
-            phantom_key: PhantomData,
-            phantom_val: PhantomData,
             urcuht,
             _thread: thread,
         }
