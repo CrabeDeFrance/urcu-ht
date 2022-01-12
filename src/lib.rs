@@ -250,7 +250,7 @@ where
 {
     let hash = urcu_key_hash(key);
 
-    let mut iter: urcu_sys::cds_lfht_iter = std::mem::MaybeUninit::zeroed().assume_init();
+    let mut iter: urcu_sys::cds_lfht_iter = std::mem::MaybeUninit::uninit().assume_init();
 
     // cds_lfht_lookup - lookup a node by key.
     // @ht: the hash table.
