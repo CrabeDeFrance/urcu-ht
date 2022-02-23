@@ -53,6 +53,7 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+#[cfg(feature = "memb")]
 use std::sync::Once;
 use std::sync::{Mutex, MutexGuard};
 
@@ -72,10 +73,12 @@ pub enum RcuError {
 struct Rcu;
 
 // global flag to know if we need to initialize urcu library (calling urcu_init).
+#[cfg(feature = "memb")]
 static URCU_LIB_INITIALIZED: Once = Once::new();
 
 impl Rcu {
     pub fn init() {
+        #[cfg(feature = "memb")]
         URCU_LIB_INITIALIZED.call_once(|| unsafe {
             urcu_sys::rcu_init();
         });
@@ -275,9 +278,6 @@ where
 /// helper function to compute a hash of a key.
 fn urcu_key_hash<K: ?Sized + Hash>(data: &K) -> u64 {
     let mut hasher = wyhash::WyHash::with_seed(3);
-    /*hasher.write(&[0, 1, 2]);*/
-
-    /*let mut hasher = DefaultHasher::new();*/
     data.hash(&mut hasher);
     hasher.finish()
 }
@@ -355,6 +355,13 @@ where
     pub fn rdlock(&self) -> RcuHtRead<K, V> {
         RcuHtRead::new(self.urcuht, self)
     }
+
+    #[cfg(feature = "qsbr")]
+    pub fn quiescent_state(&self) {
+        unsafe {
+            urcu_sys::rcu_quiescent_state();
+        }
+    }
 }
 
 impl<'ht, K, V> Drop for RcuHtThread<'ht, K, V> {
@@ -375,6 +382,20 @@ impl<'ht, K, V> Drop for RcuHtThread<'ht, K, V> {
     }
 }
 
+fn urcu_read_lock() {
+    #[cfg(feature = "memb")]
+    unsafe {
+        urcu_sys::rcu_read_lock();
+    }
+}
+
+fn urcu_read_unlock() {
+    #[cfg(feature = "memb")]
+    unsafe {
+        urcu_sys::rcu_read_unlock();
+    }
+}
+
 pub struct RcuHtRead<'thread, 'ht, K, V> {
     urcuht: *mut urcu_sys::cds_lfht,
     _thread: &'thread RcuHtThread<'ht, K, V>,
@@ -389,9 +410,7 @@ where
     /// It registers this thread in urcu lib.
     /// It must stick to a single thread. One must not try to move this handle between threads.
     pub fn new(urcuht: *mut urcu_sys::cds_lfht, thread: &'thread RcuHtThread<'ht, K, V>) -> Self {
-        unsafe {
-            urcu_sys::rcu_read_lock();
-        }
+        urcu_read_lock();
 
         RcuHtRead {
             urcuht,
@@ -421,10 +440,7 @@ where
 
 impl<'thread, 'ht, K, V> Drop for RcuHtRead<'thread, 'ht, K, V> {
     fn drop(&mut self) {
-        /* manage thread reference counter : if the count is 0 (last object) => unregister this thread */
-        unsafe {
-            urcu_sys::rcu_read_unlock();
-        }
+        urcu_read_unlock();
     }
 }
 
@@ -477,6 +493,8 @@ where
     /// Add or replace an existing key/value.
     ///
     /// Parameters (key and value) are moved in hashtable.
+    /// Main difference with standard collection HashMap : we cannot return/move existing value here.
+    /// We must destroy it after a grace period. If it were returned by this function, it could be deleted immediately
     pub fn insert_or_replace(&mut self, key: K, value: V) {
         let h = urcu_key_hash(&key);
 
@@ -503,7 +521,7 @@ where
             std::ptr::write(&mut val.data, value);
 
             // now add or replace it
-            urcu_sys::rcu_read_lock();
+            urcu_read_lock();
 
             // Return the node replaced upon success. If no node matching the key
             // was present, return NULL, which also means the operation succeeded.
@@ -519,7 +537,7 @@ where
                 &mut val.node as *mut urcu_sys::cds_lfht_node,
             );
 
-            urcu_sys::rcu_read_unlock();
+            urcu_read_unlock();
 
             // if add_replace returns an node, we must free it
             if !old_node.is_null() {
@@ -528,7 +546,7 @@ where
                 let node = urcu_cds_lfht_node_to_rust_type::<K, V>(old_node);
 
                 // ask to free data after grace period
-                urcu_sys::urcu_memb_call_rcu(&mut (*node).head, Some(urcu_free_node::<K, V>));
+                urcu_sys::call_rcu(&mut (*node).head, Some(urcu_free_node::<K, V>));
             }
         }
     }
@@ -546,7 +564,7 @@ where
 
         unsafe {
             // RCU read-side lock must be held between lookup and removal.
-            urcu_sys::rcu_read_lock();
+            urcu_read_lock();
 
             let found_node = urcu_get_node::<Q, K, V>(self.urcuht, key);
 
@@ -563,10 +581,10 @@ where
 
                 // Ask to free data after grace period
                 let node = urcu_cds_lfht_node_to_rust_type::<K, V>(found_node);
-                urcu_sys::urcu_memb_call_rcu(&mut (*node).head, Some(urcu_free_node::<K, V>));
+                urcu_sys::call_rcu(&mut (*node).head, Some(urcu_free_node::<K, V>));
             }
 
-            urcu_sys::rcu_read_unlock();
+            urcu_read_unlock();
         }
 
         if found {

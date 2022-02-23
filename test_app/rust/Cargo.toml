@@ -12,5 +12,9 @@ urcu-ht = { path = "../../" }
 
 [profile.release-lto]
 inherits = "release"
-overflow-checks = false
 lto = true
+debug = true
+
+[features]
+qsbr = [ "urcu-ht/qsbr" ]
+memb = [ "urcu-ht/memb" ]

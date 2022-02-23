@@ -15,4 +15,12 @@ For writer thread, we still need a lock to protect against concurrent insert or 
 
 # How to use
 
-Build documentation (cargo doc) or check out unit tests.
+Add the following in your cargo.toml:
+
+```
+[features]
+default = ["memb"]
+memb = [ "urcu-ht/memb" ]
+```
+
+Then build documentation (cargo doc) or check out unit tests.

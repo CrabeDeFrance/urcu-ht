@@ -49,7 +49,6 @@ fn main() {
             Arg::new("cores")
                 .short('c')
                 .long("cores")
-                .required(true)
                 .multiple_values(true)
                 .value_name("CORES")
                 .help("Sets the core list")
@@ -73,13 +72,18 @@ fn main() {
         )
         .get_matches();
 
-    let mut cores: Vec<usize> = matches
-        .values_of("cores")
-        .expect("missing core list")
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|s| s.parse::<usize>().unwrap())
-        .collect::<Vec<usize>>();
+    let mut cores: Vec<usize> = match matches.values_of("cores") {
+        Some(cores) => cores
+            .collect::<Vec<&str>>()
+            .iter()
+            .map(|s| s.parse::<usize>().unwrap())
+            .collect::<Vec<usize>>(),
+        None => core_affinity::get_core_ids()
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<usize>>(),
+    };
 
     let objects = matches
         .value_of("objects")
@@ -92,6 +96,23 @@ fn main() {
         .unwrap_or("10")
         .parse::<u64>()
         .unwrap();
+
+    if cores.len() < 2 {
+        println!("There must be at least 2 cores to run this test");
+        return;
+    }
+
+    if seconds < 1 {
+        println!("test should run for at least 1 second");
+        return;
+    }
+
+    if objects < 1 {
+        println!("we must add at least 1 object in database");
+        return;
+    }
+
+    println!("{} cores used and {objects} objects changed every 1ms.", cores.len());
 
     let ht = HashMap::new();
     let mutex = RwLock::new(ht);

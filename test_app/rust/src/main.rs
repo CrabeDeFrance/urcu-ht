@@ -7,8 +7,6 @@ use clap::{App, Arg};
 use core_affinity::CoreId;
 use urcu_ht::RcuHt;
 
-const GLOBAL_KEY_LOOKUP: u32 = 0;
-
 struct ThreadData {
     key_found: u64,
     key_not_found: u64,
@@ -35,11 +33,14 @@ fn read_rcu(ht: Arc<RcuHt<u32, u32>>, id: usize) {
 
     loop {
         let rdlock = thread.rdlock();
-        let val = rdlock.get(&GLOBAL_KEY_LOOKUP);
+        let val = rdlock.get(&0);
         match val {
             Some(_) => thread_data.key_found += 1,
             None => thread_data.key_not_found += 1,
         }
+
+        #[cfg(feature = "qsbr")]
+        thread.quiescent_state();
     }
 }
 
@@ -54,7 +55,6 @@ fn main() {
             Arg::new("cores")
                 .short('c')
                 .long("cores")
-                .required(true)
                 .multiple_values(true)
                 .value_name("CORES")
                 .help("Sets the core list")
@@ -78,13 +78,20 @@ fn main() {
         )
         .get_matches();
 
-    let mut cores: Vec<usize> = matches
-        .values_of("cores")
-        .expect("missing core list")
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|s| s.parse::<usize>().unwrap())
-        .collect::<Vec<usize>>();
+    // use "cores" option or take all available cores
+    let mut cores: Vec<usize> = match matches.values_of("cores") {
+        Some(cores) => cores
+            .collect::<Vec<&str>>()
+            .iter()
+            .map(|s| s.parse::<usize>().unwrap())
+            .collect::<Vec<usize>>(),
+        None => core_affinity::get_core_ids()
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<usize>>(),
+    };
+
     let objects = matches
         .value_of("objects")
         .unwrap_or("1")
@@ -95,6 +102,23 @@ fn main() {
         .unwrap_or("10")
         .parse::<u64>()
         .unwrap();
+
+    if cores.len() < 2 {
+        println!("There must be at least 2 cores to run this test");
+        return;
+    }
+
+    if seconds < 1 {
+        println!("test should run for at least 1 second");
+        return;
+    }
+
+    if objects < 1 {
+        println!("we must add at least 1 object in database");
+        return;
+    }
+
+    println!("{} cores used and {objects} objects changed every 1ms.", cores.len());
 
     let ht = RcuHt::new(64, 64, 64, false).expect("Cannot allocate RCU hashtable");
     let ht = Arc::new(ht);

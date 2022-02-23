@@ -7,6 +7,8 @@
 #include <string.h>
 #include <sys/time.h>
 #include <getopt.h>
+#include <numa.h>
+#include <sys/stat.h>
 #include "jhash.h"
 
 #define _LGPL_SOURCE
@@ -174,13 +176,40 @@ int main(int argc, char **argv) {
         }
     }
 
+    // cores not configured, try autodetection with libnuma
+    if (core_nb == 0) {
+        const struct bitmask *cpus = numa_nodes_ptr;
+        unsigned int i;
+        
+        if (numa_available() >= 0) {
+            for (i = 0; i < numa_num_possible_nodes(); i++) {
+                if (numa_bitmask_isbitset(cpus, i)) {
+                    core_list[core_nb++] = i;
+                }
+            }
+        } else {
+            // try with /sys
+            for (i = 0; i < NUMA_NUM_NODES; i++) {
+                char path[BUFSIZ];
+                struct stat unused;
+                
+                snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u", i);
+                
+                if (stat(path, &unused) == 0) {
+                    core_list[core_nb++] = i;
+                }
+            }
+        }
+        
+    }
+
     if (core_nb < 2) {
-        printf("There must be at least 2 cores\n");
+        printf("There must be at least 2 cores to run this test\n");
         return 1;
     }
 
-    if (seconds < 5) {
-        printf("test should run for at least 5 seconds\n");
+    if (seconds < 1) {
+        printf("test should run for at least 1 second\n");
         return 1;
     }
 
@@ -188,6 +217,8 @@ int main(int argc, char **argv) {
         printf("we must add at least 1 object in database\n");
         return 1;
     }
+
+    printf("%u cores used and %u objects changed every 1ms.\n", core_nb, objects);
 
     rcu_init();
 

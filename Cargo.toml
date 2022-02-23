@@ -7,7 +7,11 @@ edition = "2021"
 
 [dependencies]
 libc = "0.2"
-urcu-sys = "0.0"
+urcu-sys = { version="0.0", path = "../urcu-sys", default-features = false }
 memoffset = "0.6.5"
 clap = "3.0.0"
 wyhash = "0.5.0"
+
+[features]
+qsbr = ["urcu-sys/qsbr"]
+memb = ["urcu-sys/memb"]
